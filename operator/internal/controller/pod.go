@@ -29,13 +29,18 @@ import (
 )
 
 const (
-	envbuilderImage = "ghcr.io/coder/envbuilder:latest"
-	agentPodName    = "agent"
-	// In-cluster registry address (internal port 5000); host-side is localhost:5050
+	// Use the pre-built devcontainer image directly rather than running envbuilder on every
+	// task start. Envbuilder's postCreateCommand (npm install + Playwright browser download)
+	// adds ~600 MiB of downloads and consistently OOMKills the pod. The cached image already
+	// has claude, git, gh, and all system packages installed.
+	// In-cluster registry (internal port 5000); host-side is localhost:5050.
+	agentImage   = "slaktforskning-registry:5000/slaktforskning-devcontainer:latest"
+	agentPodName = "agent"
 	registryBase = "slaktforskning-registry:5000"
 )
 
 func int64Ptr(i int64) *int64 { return &i }
+func boolPtr(b bool) *bool    { return &b }
 
 func repoName(repo string) string {
 	parts := strings.SplitN(repo, "/", 2)
@@ -62,19 +67,27 @@ func buildAgentPrompt(task *devpipelinev1alpha1.DevTask) string {
 func agentPod(task *devpipelinev1alpha1.DevTask, githubToken, claudeToken string) *corev1.Pod {
 	ns := taskNamespace(task)
 	repo := repoName(task.Spec.Repo)
-	cacheRepo := registryBase + "/" + repo + "-devcontainer"
 	prompt := buildAgentPrompt(task)
 
-	// Install deps with --legacy-peer-deps as a workaround for devcontainer
-	// postCreateCommand peer dep failure; this ensures node_modules exist before
-	// the agent tries to run tests.
+	// Clone the repo and run claude as the node user (UID 1000).
+	// Credentials are stored via git-credentials file so the remote URL stays clean
+	// and git push / gh pr create work without exposing the token in git remote -v output.
 	runScript := fmt.Sprintf(
-		"#!/bin/bash\nset -e\ncd /workspaces/%s\n"+
-			"npm install --legacy-peer-deps --silent 2>/tmp/npm-install.log || true\n"+
+		"#!/bin/bash\nset -e\n"+
+			"export HOME=/home/node\n"+
+			// Set up git credential store so push works without token in the remote URL.
+			// echo expands ${GITHUB_PERSONAL_ACCESS_TOKEN} from the container environment at runtime.
+			"git config --global credential.helper store\n"+
+			"echo \"https://x-access-token:${GITHUB_PERSONAL_ACCESS_TOKEN}@github.com\" > /home/node/.git-credentials\n"+
+			"git config --global --add safe.directory /workspaces/%s\n"+
+			"git config --global user.name \"${GIT_AUTHOR_NAME}\"\n"+
+			"git config --global user.email \"${GIT_AUTHOR_EMAIL}\"\n"+
+			"git clone https://github.com/%s /workspaces/%s\n"+
+			"cd /workspaces/%s\n"+
 			"claude -p %q "+
 			"--allowedTools 'Read,Edit,Write,Bash,mcp__github' "+
 			"--dangerously-skip-permissions --output-format json > /tmp/claude-output.json",
-		repo, prompt,
+		repo, task.Spec.Repo, repo, repo, prompt,
 	)
 
 	return &corev1.Pod{
@@ -86,6 +99,14 @@ func agentPod(task *devpipelinev1alpha1.DevTask, githubToken, claudeToken string
 		Spec: corev1.PodSpec{
 			RestartPolicy:         corev1.RestartPolicyNever,
 			ActiveDeadlineSeconds: int64Ptr(1800),
+			// Run everything as the node user (UID/GID 1000) so claude's
+			// --dangerously-skip-permissions flag is accepted (it refuses root).
+			SecurityContext: &corev1.PodSecurityContext{
+				RunAsUser:    int64Ptr(1000),
+				RunAsGroup:   int64Ptr(1000),
+				FSGroup:      int64Ptr(1000),
+				RunAsNonRoot: boolPtr(true),
+			},
 			InitContainers: []corev1.Container{{
 				Name:    "write-script",
 				Image:   "busybox",
@@ -96,20 +117,17 @@ func agentPod(task *devpipelinev1alpha1.DevTask, githubToken, claudeToken string
 				},
 			}},
 			Containers: []corev1.Container{{
-				Name:  "agent",
-				Image: envbuilderImage,
+				Name:    "agent",
+				Image:   agentImage,
+				Command: []string{"/bin/bash", "/tmp/run-agent.sh"},
 				Env: []corev1.EnvVar{
-					{Name: "ENVBUILDER_GIT_URL", Value: "https://github.com/" + task.Spec.Repo},
-					{Name: "ENVBUILDER_GIT_USERNAME", Value: "x-access-token"},
-					{Name: "ENVBUILDER_GIT_PASSWORD", Value: githubToken},
-					{Name: "ENVBUILDER_CACHE_REPO", Value: cacheRepo},
-					{Name: "ENVBUILDER_POST_START_SCRIPT_PATH", Value: "/tmp/run-agent.sh"},
-					{Name: "ENVBUILDER_INSECURE", Value: "true"},
 					{Name: "GITHUB_PERSONAL_ACCESS_TOKEN", Value: githubToken},
+					// gh CLI respects GITHUB_TOKEN for authentication
+					{Name: "GITHUB_TOKEN", Value: githubToken},
 					// Support both Claude Max (OAuth) and API key auth
 					{Name: "CLAUDE_CODE_OAUTH_TOKEN", Value: claudeToken},
 					{Name: "ANTHROPIC_API_KEY", Value: claudeToken},
-					// Git identity required for DCO: git commit -s generates Signed-off-by from these.
+					// Git identity for DCO: git commit -s generates Signed-off-by from these.
 					// Moved to per-task Secrets in Phase 3.
 					{Name: "GIT_AUTHOR_NAME", Value: "Jonas Ahnstedt"},
 					{Name: "GIT_AUTHOR_EMAIL", Value: "jonas.ahnstedt@imeto.se"},
