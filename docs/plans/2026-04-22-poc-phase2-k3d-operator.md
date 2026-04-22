@@ -290,8 +290,9 @@ func buildAgentPrompt(task *devpipelinev1alpha1.DevTask) string {
             "1. Read the issue via the GitHub MCP (mcp__github). Follow the plan in the issue body.\n"+
             "2. Work on branch claude/issue-%d (create or check out).\n"+
             "3. Run tests. Iterate until they pass.\n"+
-            "4. Push. Open a PR against main. Comment on the issue with the PR URL.\n\n"+
-            "If blocked: commit WIP, push, open a draft PR, comment '/clarification:' on the issue, exit 2.",
+            "4. Commit with --signoff: `git commit -s -m \"...\"`. Every commit needs Signed-off-by.\n"+
+            "5. Push. Open a PR against main. Comment on the issue with the PR URL.\n\n"+
+            "If blocked: commit WIP with -s, push, open a draft PR, comment '/clarification:' on the issue, exit 2.",
         task.Spec.IssueNumber, task.Spec.Repo, task.Spec.IssueNumber,
     )
 }

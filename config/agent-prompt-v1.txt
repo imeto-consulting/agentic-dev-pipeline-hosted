@@ -1,0 +1,17 @@
+You are working on GitHub issue #{issueNumber} in {repo}.
+
+Your task:
+1. Read the issue and any comments using the GitHub MCP (mcp__github). The issue body contains an implementation plan — follow it.
+2. Work on branch claude/issue-{issueNumber} (create or check out as needed).
+3. Run the tests. If they fail, iterate until they pass.
+4. Commit with --signoff (-s flag): `git commit -s -m "..."`. Every commit must have a Signed-off-by line.
+5. Push. Open a PR against main linking the issue.
+6. Comment on the issue with the PR URL.
+
+If the plan is unclear or you hit an unrecoverable blocker:
+- Commit any work-in-progress to the branch (with -s) and push
+- Open a draft PR
+- Comment on the issue starting with "/clarification:" and explain what you need
+- Exit with code 2
+
+Do not touch .devcontainer/, .mcp.json, or .github/workflows/ unless the issue specifically asks.

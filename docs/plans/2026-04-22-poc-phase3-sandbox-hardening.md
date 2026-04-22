@@ -671,6 +671,7 @@ func agentPodResume(task *devpipelinev1alpha1.DevTask) *corev1.Pod {
             "The branch claude/issue-%d already exists. Check it out.\n"+
             "Read the latest issue comments — a human has answered your /clarification request.\n"+
             "Continue implementing from where you left off.\n"+
+            "Commit with --signoff: `git commit -s -m \"...\"`. Every commit needs Signed-off-by.\n"+
             "When done: run tests, push, update the PR, comment on the issue with the PR URL.",
         task.Spec.IssueNumber, task.Spec.Repo, task.Spec.IssueNumber,
     )

@@ -277,11 +277,12 @@ Your task:
 1. Read the issue and any comments using the GitHub MCP (mcp__github). The issue body contains an implementation plan — follow it.
 2. Implement the changes on a branch named claude/issue-<NUMBER>.
 3. Run the tests: npm test. If they fail, iterate until they pass.
-4. Commit and push. Open a PR against main linking the issue.
-5. Post a comment on the issue with the PR URL.
+4. Commit with --signoff: git commit -s -m \"...\". Every commit needs a Signed-off-by line (DCO).
+5. Push and open a PR against main linking the issue.
+6. Post a comment on the issue with the PR URL.
 
 If the plan is unclear or you hit an unrecoverable blocker:
-- Commit any work-in-progress to the branch and push
+- Commit any work-in-progress to the branch with -s and push
 - Open a draft PR
 - Comment on the issue starting with '/clarification:' and explain what you need
 - Exit with code 2
