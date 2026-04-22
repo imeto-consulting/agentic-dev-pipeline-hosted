@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -53,14 +54,22 @@ func repoName(repo string) string {
 func buildAgentPrompt(task *devpipelinev1alpha1.DevTask) string {
 	return fmt.Sprintf(
 		"You are working on GitHub issue #%d in %s.\n\n"+
-			"1. Read the issue via the GitHub MCP (mcp__github). Follow the plan in the issue body.\n"+
-			"2. Work on branch claude/issue-%d (create or check out).\n"+
+			"1. Read the issue: `gh issue view %d -R %s`. Follow the plan in the issue body.\n"+
+			"2. Work on branch claude/issue-%d (create or check out with `git checkout -b claude/issue-%d || git checkout claude/issue-%d`).\n"+
 			"3. Run tests. Iterate until they pass.\n"+
 			"4. Commit with --signoff: `git commit -s -m \"...\"`. Every commit needs Signed-off-by.\n"+
-			"5. Push. Open a PR against main. Comment on the issue with the PR URL.\n\n"+
-			"If blocked: commit WIP with -s, push, open a draft PR, comment '/clarification:' on the issue, exit 2.\n"+
-			"Do not touch .devcontainer/, .mcp.json, or .github/workflows/ unless the issue specifically asks.",
-		task.Spec.IssueNumber, task.Spec.Repo, task.Spec.IssueNumber,
+			"5. Push: `git push -u origin claude/issue-%d`.\n"+
+			"6. Open a PR: `gh pr create --base main --title \"fix: ...\" --body \"Closes #%d\"`.\n"+
+			"7. Comment on the issue: `gh issue comment %d -R %s --body \"PR: <url>\"`.\n\n"+
+			"If blocked: commit WIP with -s, push, open a draft PR with --draft, comment '/clarification:' on the issue, exit 2.\n"+
+			"Do not touch .devcontainer/, .mcp.json, or .github/workflows/ unless the issue specifically asks.\n"+
+			"Use Bash for all git and gh commands. GITHUB_TOKEN is pre-set.",
+		task.Spec.IssueNumber, task.Spec.Repo,
+		task.Spec.IssueNumber, task.Spec.Repo,
+		task.Spec.IssueNumber, task.Spec.IssueNumber, task.Spec.IssueNumber,
+		task.Spec.IssueNumber,
+		task.Spec.IssueNumber,
+		task.Spec.IssueNumber, task.Spec.Repo,
 	)
 }
 
@@ -84,8 +93,12 @@ func agentPod(task *devpipelinev1alpha1.DevTask, githubToken, claudeToken string
 			"git config --global user.email \"${GIT_AUTHOR_EMAIL}\"\n"+
 			"git clone https://github.com/%s /workspaces/%s\n"+
 			"cd /workspaces/%s\n"+
+			// Remove .mcp.json so claude does not try to spawn Node.js MCP servers,
+			// which get OOMKilled due to Docker VM swap exhaustion. gh CLI covers all
+			// GitHub operations we need (gh issue view, gh pr create, gh issue comment).
+			"rm -f .mcp.json\n"+
 			"claude -p %q "+
-			"--allowedTools 'Read,Edit,Write,Bash,mcp__github' "+
+			"--allowedTools 'Read,Edit,Write,Bash' "+
 			"--dangerously-skip-permissions --output-format json > /tmp/claude-output.json",
 		repo, task.Spec.Repo, repo, repo, prompt,
 	)
@@ -120,6 +133,14 @@ func agentPod(task *devpipelinev1alpha1.DevTask, githubToken, claudeToken string
 				Name:    "agent",
 				Image:   agentImage,
 				Command: []string{"/bin/bash", "/tmp/run-agent.sh"},
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceMemory: resource.MustParse("512Mi"),
+					},
+					Limits: corev1.ResourceList{
+						corev1.ResourceMemory: resource.MustParse("4Gi"),
+					},
+				},
 				Env: []corev1.EnvVar{
 					{Name: "GITHUB_PERSONAL_ACCESS_TOKEN", Value: githubToken},
 					// gh CLI respects GITHUB_TOKEN for authentication
