@@ -153,32 +153,47 @@ func taskSecretName(task *devpipelinev1alpha1.DevTask) string {
     return fmt.Sprintf("devtask-%d-creds", task.Spec.IssueNumber)
 }
 
+type pipelineCreds struct {
+    githubToken    string
+    anthropicKey   string
+    gitAuthorName  string
+    gitAuthorEmail string
+}
+
 // ensureTaskSecret copies the cluster-level pipeline credentials into the task namespace.
-// githubToken and anthropicKey come from a Secret in the system namespace (not env vars).
-func ensureTaskSecret(ctx context.Context, c client.Client, task *devpipelinev1alpha1.DevTask, githubToken, anthropicKey string) error {
+// creds come from a Secret in the system namespace (not env vars).
+func ensureTaskSecret(ctx context.Context, c client.Client, task *devpipelinev1alpha1.DevTask, creds pipelineCreds) error {
     secret := &corev1.Secret{
         ObjectMeta: metav1.ObjectMeta{
             Name:      taskSecretName(task),
             Namespace: taskNamespace(task),
         },
         StringData: map[string]string{
-            "github-token":    githubToken,
-            "anthropic-api-key": anthropicKey,
+            "github-token":      creds.githubToken,
+            "anthropic-api-key": creds.anthropicKey,
+            // Required for DCO: git commit -s generates Signed-off-by from these values
+            "git-author-name":  creds.gitAuthorName,
+            "git-author-email": creds.gitAuthorEmail,
         },
     }
     return client.IgnoreAlreadyExists(c.Create(ctx, secret))
 }
 
 // readPipelineCredentials reads the pipeline's own credentials from a Secret in devpipeline-system.
-func readPipelineCredentials(ctx context.Context, c client.Client) (githubToken, anthropicKey string, err error) {
+func readPipelineCredentials(ctx context.Context, c client.Client) (pipelineCreds, error) {
     secret := &corev1.Secret{}
-    if err = c.Get(ctx, client.ObjectKey{
+    if err := c.Get(ctx, client.ObjectKey{
         Namespace: "devpipeline-system",
         Name:      "pipeline-creds",
     }, secret); err != nil {
-        return "", "", fmt.Errorf("read pipeline-creds secret: %w", err)
+        return pipelineCreds{}, fmt.Errorf("read pipeline-creds secret: %w", err)
     }
-    return string(secret.Data["github-token"]), string(secret.Data["anthropic-api-key"]), nil
+    return pipelineCreds{
+        githubToken:    string(secret.Data["github-token"]),
+        anthropicKey:   string(secret.Data["anthropic-api-key"]),
+        gitAuthorName:  string(secret.Data["git-author-name"]),
+        gitAuthorEmail: string(secret.Data["git-author-email"]),
+    }, nil
 }
 ```
 
@@ -209,6 +224,43 @@ Env: []corev1.EnvVar{
             },
         },
     },
+    // Git identity required for DCO: git commit -s uses these to build Signed-off-by
+    {
+        Name: "GIT_AUTHOR_NAME",
+        ValueFrom: &corev1.EnvVarSource{
+            SecretKeyRef: &corev1.SecretKeySelector{
+                LocalObjectReference: corev1.LocalObjectReference{Name: taskSecretName(task)},
+                Key: "git-author-name",
+            },
+        },
+    },
+    {
+        Name: "GIT_AUTHOR_EMAIL",
+        ValueFrom: &corev1.EnvVarSource{
+            SecretKeyRef: &corev1.SecretKeySelector{
+                LocalObjectReference: corev1.LocalObjectReference{Name: taskSecretName(task)},
+                Key: "git-author-email",
+            },
+        },
+    },
+    {
+        Name: "GIT_COMMITTER_NAME",
+        ValueFrom: &corev1.EnvVarSource{
+            SecretKeyRef: &corev1.SecretKeySelector{
+                LocalObjectReference: corev1.LocalObjectReference{Name: taskSecretName(task)},
+                Key: "git-author-name",
+            },
+        },
+    },
+    {
+        Name: "GIT_COMMITTER_EMAIL",
+        ValueFrom: &corev1.EnvVarSource{
+            SecretKeyRef: &corev1.SecretKeySelector{
+                LocalObjectReference: corev1.LocalObjectReference{Name: taskSecretName(task)},
+                Key: "git-author-email",
+            },
+        },
+    },
 },
 ```
 
@@ -220,11 +272,11 @@ In `devtask_controller.go`, in the `case ""` branch, replace the direct `os.Gete
 
 ```go
 // Read credentials from the system-namespace Secret
-githubToken, anthropicKey, err := readPipelineCredentials(ctx, r.Client)
+creds, err := readPipelineCredentials(ctx, r.Client)
 if err != nil {
     return ctrl.Result{}, err
 }
-if err := ensureTaskSecret(ctx, r.Client, task, githubToken, anthropicKey); err != nil {
+if err := ensureTaskSecret(ctx, r.Client, task, creds); err != nil {
     return ctrl.Result{}, fmt.Errorf("ensure task secret: %w", err)
 }
 pod := agentPod(task)  // no longer takes token params
@@ -235,11 +287,15 @@ pod := agentPod(task)  // no longer takes token params
 ```bash
 kubectl create secret generic pipeline-creds \
   --namespace devpipeline-system \
-  --from-literal=github-token="${GITHUB_TOKEN}" \
-  --from-literal=anthropic-api-key="${ANTHROPIC_API_KEY}"
+  --from-literal=github-token="${GITHUB_PERSONAL_ACCESS_TOKEN}" \
+  --from-literal=anthropic-api-key="${ANTHROPIC_API_KEY}" \
+  --from-literal=git-author-name="Jonas Ahnstedt" \
+  --from-literal=git-author-email="jonas.ahnstedt@imeto.se"
 ```
 
 Document this in `CLAUDE.md` under "Local development setup".
+
+> **DCO note:** `git-author-name` and `git-author-email` are mounted as `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, and `GIT_COMMITTER_EMAIL` in the agent pod. Without these, `git commit -s` produces `Signed-off-by:  <>` which fails the DCO check.
 
 - [ ] **Step 5: Build and test**
 
@@ -525,11 +581,11 @@ In the `PhaseAwaitingReview` case of Reconcile:
 
 ```go
 case devpipelinev1alpha1.PhaseAwaitingReview:
-    githubToken, _, err := readPipelineCredentials(ctx, r.Client)
+    creds, err := readPipelineCredentials(ctx, r.Client)
     if err != nil {
         return ctrl.Result{RequeueAfter: 2 * time.Minute}, err
     }
-    merged, err := isPRMergedOrClosed(ctx, task, githubToken)
+    merged, err := isPRMergedOrClosed(ctx, task, creds.githubToken)
     if err != nil {
         return ctrl.Result{RequeueAfter: 2 * time.Minute}, err
     }
@@ -607,11 +663,11 @@ func hasRecentClarificationComment(ctx context.Context, task *devpipelinev1alpha
 
 ```go
 case devpipelinev1alpha1.PhaseBlockedOnClarification:
-    githubToken, _, err := readPipelineCredentials(ctx, r.Client)
+    creds, err := readPipelineCredentials(ctx, r.Client)
     if err != nil {
         return ctrl.Result{RequeueAfter: time.Minute}, err
     }
-    humanReplied, err := humanRepliedAfterClarification(ctx, task, githubToken)
+    humanReplied, err := humanRepliedAfterClarification(ctx, task, creds.githubToken)
     if err != nil || !humanReplied {
         return ctrl.Result{RequeueAfter: time.Minute}, err
     }
@@ -619,12 +675,11 @@ case devpipelinev1alpha1.PhaseBlockedOnClarification:
     if err := ensureNamespace(ctx, r.Client, task); err != nil {
         return ctrl.Result{}, err
     }
-    creds := struct{ github, anthropic string }{}
-    creds.github, creds.anthropic, err = readPipelineCredentials(ctx, r.Client)
+    creds, err := readPipelineCredentials(ctx, r.Client)
     if err != nil {
         return ctrl.Result{}, err
     }
-    if err := ensureTaskSecret(ctx, r.Client, task, creds.github, creds.anthropic); err != nil {
+    if err := ensureTaskSecret(ctx, r.Client, task, creds); err != nil {
         return ctrl.Result{}, err
     }
     if err := ensureNetworkPolicy(ctx, r.Client, task); err != nil {

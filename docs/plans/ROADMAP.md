@@ -1,98 +1,82 @@
-# Agentic Development Pipeline
+# Agentic Development Pipeline — Roadmap
 
-Kubernetes-native pipeline that takes a triaged GitHub issue to a reviewable PR. `claude -p` runs headless inside an ephemeral sandboxed devcontainer built by envbuilder. Two cluster components: a triage CronJob and an operator. One CRD: `DevTask`.
+> Milestone map. Active plans are in `docs/plans/`; finished plans move to `docs/plans/archive/`.
 
-## What this repo contains
+---
 
-This repo is the **pipeline** (operator, triage agent, cluster config). The repo being maintained by the pipeline is `jonaseck2/slaktforskning` at `/Users/jonasahnstedt/git/slaktforskning`.
+## POC: Claude as Maintainer of `slaktforskning`
 
-```
-docs/
-  plans/
-    ROADMAP.md                  — milestone map
-    2026-04-22-poc-phase*.md    — implementation plans (active)
-    archive/                    — finished plans
-    design/
-      agentic-dev-pipeline-poc-design.md   — POC spec
-      agentic-dev-pipeline-design.md       — v2.0 design
-CLAUDE.md                       — this file
-ARCHITECTURE.md                 — system architecture reference
-.claude/
-  skills/                       — development skills for working on this repo
-```
+**Goal:** End-to-end agentic pipeline on a laptop k3d cluster. File an issue → triage writes a plan → agent implements it → PR opens → merge → namespace cleaned up. No manual steps between filing and reviewing.
 
-## Tech stack
+---
 
-| Layer | Technology |
-|---|---|
-| Cluster | k3d (laptop), k3s |
-| CNI | Calico (NetworkPolicy enforcement) |
-| Operator framework | kubebuilder v3 |
-| Container builder | envbuilder (Coder) |
-| Agent | Claude Code (`claude -p`) |
-| Ticketing | GitHub Issues via `@modelcontextprotocol/server-github` |
-| Language | Go (operator), shell (cluster setup) |
+### Phase 1 — Agent Smoke Test ✅
+**Plan:** `docs/plans/archive/2026-04-22-poc-phase1-agent-smoke-test.md`
 
-## Local development setup
+- [x] Add GitHub MCP to `.mcp.json` in `slaktforskning`
+- [x] Forward `GITHUB_PERSONAL_ACCESS_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` via `devcontainer.json` `remoteEnv`
+- [x] Remove `claude-code-action` GitHub Actions workflow (replaced by this pipeline)
+- [x] Create pipeline labels on `slaktforskning`: `needs-triage`, `ready-for-development`, `needs-info`
+- [x] File issue #10 with full implementation plan (add `limit` param to `search_persons`)
+- [x] `claude -p` implemented issue #10 in 28 turns, 1843 tests pass, PR #11 opened
+- [x] Prompt template saved to `config/agent-prompt-v1.txt`
+- [x] `git commit --signoff` (`-s`) added to all prompt templates for DCO compliance
 
-### Prerequisites
+**What we learned:**
+- Run `claude -p` from the host (not the devcontainer) using `GITHUB_PERSONAL_ACCESS_TOKEN=$(gh auth token)`
+- Use `GITHUB_PERSONAL_ACCESS_TOKEN` as the env var name everywhere — no mapping needed
+- `--allowedTools "Read,Edit,Write,Bash,mcp__github"` correctly restricts the agent; slaktforskning MCPs in `.mcp.json` are harmless (ignored via allowedTools)
+- Cost: $0.86 per issue (28 turns, Sonnet 4.6)
 
-```bash
-brew install k3d kubectl kubebuilder helm
-```
+---
 
-### Cluster bring-up
+### Phase 2 — k3d Cluster, CRD, Minimal Operator
+**Plan:** `docs/plans/2026-04-22-poc-phase2-k3d-operator.md`
 
-```bash
-k3d cluster create slaktforskning-poc \
-  --agents 1 \
-  --port "8080:80@loadbalancer" \
-  --registry-create slaktforskning-registry:5000 \
-  --k3s-arg "--flannel-backend=none@server:*" \
-  --k3s-arg "--disable-network-policy@server:*"
+- [ ] `k3d cluster create` with local registry and Calico
+- [ ] Kubebuilder scaffold: `DevTask` CRD + controller
+- [ ] Envbuilder builds `slaktforskning` devcontainer, caches to local registry
+- [ ] Configure git identity in agent pod (`GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL`) so `git commit -s` produces a valid `Signed-off-by:` line for DCO
+- [ ] `kubectl apply -f devtask-sample.yaml` → PR appears on `slaktforskning`
 
-# Install Calico for NetworkPolicy enforcement
-kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml
-```
+**Exit criteria:** `kubectl apply` triggers a real PR within ~5 minutes. DCO check passes on the PR.
 
-### Operator development
+> **Note:** DCO requires only `Signed-off-by:` in the commit message (no GPG key needed). The `-s` flag on `git commit` generates this line using `git config user.name` / `user.email`, which must be set in the pod environment.
 
-```bash
-cd operator/
-make generate          # regenerate CRD manifests after type changes
-make manifests         # update CRD YAML
-make install           # apply CRDs to the cluster
-make run               # run controller locally against the cluster
-make docker-build      # build the operator image
-```
+---
 
-### Running the full pipeline locally
+### Phase 3 — Sandbox Hardening and Automated Trigger
+**Plan:** `docs/plans/2026-04-22-poc-phase3-sandbox-hardening.md`
 
-```bash
-kubectl create secret generic pipeline-creds \
-  --from-literal=github-token=<fine-grained-PAT> \
-  --from-literal=anthropic-api-key=<key> \
-  -n agentic-dev-pipeline-system
+- [ ] NetworkPolicy: deny-all + allowlist (api.github.com, api.anthropic.com, kube-dns)
+- [ ] Per-task Kubernetes Secrets (not env vars); fine-grained PAT scoped to single repo
+- [ ] Pod security: non-root, read-only rootFS, dropped caps, `activeDeadlineSeconds: 1800`
+- [ ] GitHub poller auto-creates `DevTask` CRs on `ready-for-development` label
+- [ ] Full state machine including `BlockedOnClarification`
 
-kubectl apply -k deploy/
-```
+**Exit criteria:** Label an issue → wait → PR appears. No manual CR creation.
 
-## Working on plans
+---
 
-- Active plans: `docs/plans/2026-*-*.md`
-- Finished plans: move to `docs/plans/archive/`
-- ROADMAP: `docs/plans/ROADMAP.md` — update checkboxes as phases complete
+### Phase 4 — Triage Agent, Packaging, Demo
+**Plan:** `docs/plans/2026-04-22-poc-phase4-triage-demo.md`
 
-## Key design decisions
+- [ ] Triage CronJob (every 5 min): writes plan + applies `ready-for-development`
+- [ ] Kustomization for single-command install
+- [ ] `make demo` exercises the full loop end-to-end
 
-**No Coder, no wrapper binary.** envbuilder alone builds the devcontainer; `claude -p` is the invocation. See `docs/plans/design/agentic-dev-pipeline-poc-design.md` for rationale.
+**Exit criteria:** File an issue → triage → implementation → PR → merge → namespace cleaned up.
 
-**Polling, not webhooks.** Level-triggered poll every 30s is semantically equivalent to webhooks and requires no public ingress. Webhook receiver is a future optimization.
+---
 
-**Tickets are source of truth.** `DevTask` CR is a projection of GitHub issue state. If they disagree, the ticket wins.
+## v2.0 — Scaled Multi-Repo Pipeline
 
-**`--dangerously-skip-permissions` inside the sandbox.** The namespace NetworkPolicy is the real security boundary. The in-process permission check would block the agent indefinitely with no human to approve.
+Deferred until POC is solid. See `docs/plans/design/agentic-dev-pipeline-design.md`.
 
-## Skills
+Key additions over POC: repo topic opt-in, GitHub App auth, L7 egress proxy, Prometheus metrics, gVisor runtime.
 
-Development skills for working on this repo live in `.claude/skills/`. Invoke them with the `Skill` tool or `/skill-name`.
+---
+
+## v2.1 — Skills Update Loop
+
+Agent proposes a second PR against `skills/` after each task. Requires eval infrastructure to prevent skills rot.

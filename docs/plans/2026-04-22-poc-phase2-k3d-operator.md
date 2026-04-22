@@ -335,8 +335,14 @@ func agentPod(task *devpipelinev1alpha1.DevTask, githubToken, anthropicKey strin
                     {Name: "ENVBUILDER_REPO_URL", Value: "https://github.com/" + task.Spec.Repo},
                     {Name: "ENVBUILDER_CACHE_REPO", Value: cacheRepo},
                     {Name: "ENVBUILDER_POST_START_SCRIPT_PATH", Value: "/tmp/run-agent.sh"},
-                    {Name: "GITHUB_TOKEN", Value: githubToken},
+                    {Name: "GITHUB_PERSONAL_ACCESS_TOKEN", Value: githubToken},
                     {Name: "ANTHROPIC_API_KEY", Value: anthropicKey},
+                    // Git identity required for DCO: git commit -s needs user.name/email
+                    // to produce a valid Signed-off-by line. Read from pipeline-creds in Phase 3.
+                    {Name: "GIT_AUTHOR_NAME", Value: "Jonas Ahnstedt"},
+                    {Name: "GIT_AUTHOR_EMAIL", Value: "jonas.ahnstedt@imeto.se"},
+                    {Name: "GIT_COMMITTER_NAME", Value: "Jonas Ahnstedt"},
+                    {Name: "GIT_COMMITTER_EMAIL", Value: "jonas.ahnstedt@imeto.se"},
                 },
                 VolumeMounts: []corev1.VolumeMount{
                     {Name: "workdir", MountPath: "/workspaces"},
