@@ -1,0 +1,118 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: triage-agent
+  namespace: agentic-dev-pipeline-triage
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 240
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: triage-agent
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          initContainers:
+          - name: write-script
+            image: busybox
+            command:
+            - sh
+            - -c
+            - printf '%s' "$SCRIPT" > /tmp/triage.sh && chmod +x /tmp/triage.sh
+            env:
+            - name: SCRIPT
+              value: |
+                #!/bin/bash
+                set -e
+                export HOME=/home/node
+
+                # List open needs-triage issues
+                ISSUES=$(gh issue list \
+                  --repo jonaseck2/slaktforskning \
+                  --label needs-triage \
+                  --state open \
+                  --json number \
+                  --jq '.[].number')
+
+                if [ -z "${ISSUES}" ]; then
+                  echo "No needs-triage issues found"
+                  exit 0
+                fi
+
+                for ISSUE_NUMBER in ${ISSUES}; do
+                  echo "Triaging issue #${ISSUE_NUMBER}..."
+                  PROMPT=$(sed "s/ISSUE_NUMBER/${ISSUE_NUMBER}/g" /config/prompt.txt)
+                  claude -p "${PROMPT}" \
+                    --allowedTools 'Bash' \
+                    --dangerously-skip-permissions \
+                    --output-format json \
+                    > /tmp/triage-${ISSUE_NUMBER}.json 2>&1 || true
+                  echo "Done with issue #${ISSUE_NUMBER}"
+                done
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: [ALL]
+            volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          containers:
+          - name: triage
+            image: slaktforskning-registry:5000/slaktforskning-devcontainer:latest
+            command: ["/bin/bash", "/tmp/triage.sh"]
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: [ALL]
+            env:
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: pipeline-creds
+                  key: github-token
+            - name: GITHUB_PERSONAL_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: pipeline-creds
+                  key: github-token
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: pipeline-creds
+                  key: claude-token
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: pipeline-creds
+                  key: claude-token
+            resources:
+              requests:
+                memory: 512Mi
+            volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: claude-state
+              mountPath: /home/node/.claude
+            - name: prompt
+              mountPath: /config
+              readOnly: true
+          volumes:
+          - name: tmp
+            emptyDir: {}
+          - name: claude-state
+            emptyDir: {}
+          - name: prompt
+            configMap:
+              name: triage-prompt

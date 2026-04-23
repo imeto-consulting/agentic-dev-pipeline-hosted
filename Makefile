@@ -1,0 +1,42 @@
+.PHONY: cluster install secrets run demo clean
+
+cluster:
+	./scripts/cluster-create.sh
+
+install:
+	cd operator && make install
+	kubectl apply -k deploy/
+
+secrets:
+	@test -n "$(GITHUB_TOKEN)" || (echo "GITHUB_TOKEN not set" && exit 1)
+	@test -n "$(CLAUDE_TOKEN)" || (echo "CLAUDE_TOKEN not set" && exit 1)
+	kubectl create secret generic pipeline-creds \
+		--namespace devpipeline-system \
+		--from-literal=github-token="$(GITHUB_TOKEN)" \
+		--from-literal=claude-token="$(CLAUDE_TOKEN)" \
+		--from-literal=git-author-name="$(GIT_AUTHOR_NAME)" \
+		--from-literal=git-author-email="$(GIT_AUTHOR_EMAIL)" \
+		--dry-run=client -o yaml | kubectl apply -f -
+	kubectl create secret generic pipeline-creds \
+		--namespace agentic-dev-pipeline-triage \
+		--from-literal=github-token="$(GITHUB_TOKEN)" \
+		--from-literal=claude-token="$(CLAUDE_TOKEN)" \
+		--dry-run=client -o yaml | kubectl apply -f -
+
+run:
+	cd operator && make run
+
+demo:
+	@echo "Filing a demo issue on jonaseck2/slaktforskning..."
+	@ISSUE_NUMBER=$$(gh issue create \
+		--repo jonaseck2/slaktforskning \
+		--title "Demo: add birth-year range filter to search_persons" \
+		--label "needs-triage" \
+		--body "The search_persons MCP tool should accept optional birth_year_min and birth_year_max parameters. When provided, only return persons whose birth year is within the given range. When omitted, return all results as today." \
+		| grep -oE '[0-9]+$$') && \
+	echo "Issue #$${ISSUE_NUMBER} filed." && \
+	echo "Watch triage: kubectl create job --from=cronjob/triage-agent triage-demo -n agentic-dev-pipeline-triage" && \
+	echo "Watch DevTask: kubectl get devtask -n devpipeline-system --watch"
+
+clean:
+	k3d cluster delete slaktforskning-poc
