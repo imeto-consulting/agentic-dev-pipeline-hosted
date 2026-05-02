@@ -260,12 +260,73 @@ func agentPodResume(task *devpipelinev1alpha1.DevTask) *corev1.Pod {
 	return pod
 }
 
+func buildRevisionPrompt(task *devpipelinev1alpha1.DevTask) string {
+	return fmt.Sprintf(
+		"You are addressing PR review feedback on PR #%d for issue #%d in %s.\n\n"+
+			"Steps (in order):\n"+
+			"1. Read the PR review comments on a SINGLE LINE: `gh pr view %d -R %s --json reviews,comments --jq '{reviews: [.reviews[] | {author: .author.login, body: .body, state: .state}], comments: [.comments[] | {author: .author.login, body: .body}]}'`\n"+
+			"2. Check out the existing branch and pull latest — run on a SINGLE LINE: `git checkout claude/issue-%d && git pull origin claude/issue-%d`\n"+
+			"3. Address ALL feedback. Make every requested change now.\n"+
+			"4. Stage: `git restore .mcp.json 2>/dev/null || true && git add -A`\n"+
+			"5. Commit on a SINGLE LINE: `git commit -s -m \"fix: address review feedback\" -m \"Refs #%d\" -m \"Changes: <one sentence describing what you changed>\"`\n"+
+			"6. Push on a SINGLE LINE: `git push --force-with-lease -u origin claude/issue-%d`\n"+
+			"   The existing PR auto-updates — do NOT open a new PR.\n\n"+
+			"CRITICAL bash invariants — break these and the run fails:\n"+
+			"- Every Bash command MUST fit on a SINGLE LINE.\n"+
+			"- NEVER use heredocs, backslash-newline continuations, or multi-line --body.\n\n"+
+			"Rules:\n"+
+			"- NEVER open a new PR\n"+
+			"- NEVER comment on the issue or PR — the operator handles that\n"+
+			"- NEVER use placeholder text like '<description>'\n"+
+			"- ALWAYS run git restore .mcp.json before git add -A\n"+
+			"- Use Bash for all git/gh commands. GITHUB_TOKEN is pre-set.",
+		task.Status.PRNumber, task.Spec.IssueNumber, task.Spec.Repo,
+		task.Status.PRNumber, task.Spec.Repo,
+		task.Spec.IssueNumber, task.Spec.IssueNumber,
+		task.Spec.IssueNumber,
+		task.Spec.IssueNumber,
+	)
+}
+
+func agentPodRevision(task *devpipelinev1alpha1.DevTask) *corev1.Pod {
+	repo := repoName(task.Spec.Repo)
+	prompt := buildRevisionPrompt(task)
+	runScript := fmt.Sprintf(
+		"#!/bin/bash\nset -e\n"+
+			"export HOME=/home/node\n"+
+			"git config --global credential.helper store\n"+
+			"echo \"https://x-access-token:${GITHUB_PERSONAL_ACCESS_TOKEN}@github.com\" > /home/node/.git-credentials\n"+
+			"git config --global --add safe.directory /workspaces/%s\n"+
+			"git config --global user.name \"${GIT_AUTHOR_NAME}\"\n"+
+			"git config --global user.email \"${GIT_AUTHOR_EMAIL}\"\n"+
+			"git clone https://github.com/%s /workspaces/%s\n"+
+			"cd /workspaces/%s\n"+
+			"git checkout claude/issue-%d\n"+
+			"rm -f .mcp.json\n"+
+			"claude -p %q "+
+			"--allowedTools 'Read,Edit,Write,Bash' "+
+			"--dangerously-skip-permissions --output-format json > /tmp/claude-output.json",
+		repo, task.Spec.Repo, repo, repo,
+		task.Spec.IssueNumber,
+		prompt,
+	)
+	pod := agentPod(task, "", "")
+	pod.Name = "agent-rev"
+	pod.Spec.InitContainers[0].Env[0].Value = runScript
+	return pod
+}
+
 func ensurePod(ctx context.Context, c client.Client, pod *corev1.Pod) error {
 	return client.IgnoreAlreadyExists(c.Create(ctx, pod))
 }
 
 func getPod(ctx context.Context, c client.Client, ns string) (*corev1.Pod, error) {
 	pod := &corev1.Pod{}
+	// Prefer agent-rev: revision runs use this name and it is the active pod when present.
+	// agent-rev is deleted before each new revision cycle, so if it exists it is the current run.
+	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "agent-rev"}, pod); err == nil {
+		return pod, nil
+	}
 	err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: agentPodName}, pod)
 	return pod, err
 }

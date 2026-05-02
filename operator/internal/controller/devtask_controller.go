@@ -140,7 +140,45 @@ func (r *DevTaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			task.Status.Message = "PR merged or closed, namespace deleted"
 			return ctrl.Result{}, r.Status().Update(ctx, task)
 		}
+		needsRevision, err := prHasLabel(ctx, r.Client, task, "needs-revision")
+		if err != nil {
+			return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
+		}
+		if needsRevision {
+			task.Status.Phase = devpipelinev1alpha1.PhaseAwaitingRevision
+			task.Status.Message = "reviewer requested changes"
+			return ctrl.Result{}, r.Status().Update(ctx, task)
+		}
 		return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
+
+	case devpipelinev1alpha1.PhaseAwaitingRevision:
+		creds, err := readPipelineCredentials(ctx, r.Client)
+		if err != nil {
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, fmt.Errorf("read credentials: %w", err)
+		}
+		if err := removePRLabel(ctx, r.Client, task, "needs-revision"); err != nil {
+			logger.Error(err, "failed to remove needs-revision label")
+		}
+		if err := ensureNamespace(ctx, r.Client, task); err != nil {
+			return ctrl.Result{}, fmt.Errorf("ensure namespace: %w", err)
+		}
+		if err := ensureNetworkPolicy(ctx, r.Client, task); err != nil {
+			return ctrl.Result{}, fmt.Errorf("ensure network policy: %w", err)
+		}
+		if err := ensureTaskSecret(ctx, r.Client, task, creds); err != nil {
+			return ctrl.Result{}, fmt.Errorf("ensure task secret: %w", err)
+		}
+		// Delete a previous agent-rev pod if it exists (completed from an earlier revision cycle).
+		_ = deleteRevisionPod(ctx, r.Client, task.Status.Namespace)
+		pod := agentPodRevision(task)
+		if err := ensurePod(ctx, r.Client, pod); err != nil {
+			return ctrl.Result{}, fmt.Errorf("ensure pod: %w", err)
+		}
+		now := metav1.Now()
+		task.Status.Phase = devpipelinev1alpha1.PhaseBuilding
+		task.Status.StartedAt = &now
+		task.Status.Message = "addressing review feedback"
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, task)
 
 	case devpipelinev1alpha1.PhaseBlockedOnClarification:
 		humanReplied, err := humanRepliedAfterClarification(ctx, r.Client, task)
