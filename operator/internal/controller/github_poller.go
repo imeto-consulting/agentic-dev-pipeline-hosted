@@ -227,6 +227,44 @@ func humanRepliedAfterClarification(ctx context.Context, c client.Client, task *
 	return true, nil
 }
 
+// prHasLabel returns true if the PR associated with the DevTask has the given label.
+func prHasLabel(ctx context.Context, c client.Client, task *devpipelinev1alpha1.DevTask, label string) (bool, error) {
+	if task.Status.PRNumber == 0 {
+		return false, nil
+	}
+	creds, err := readPipelineCredentials(ctx, c)
+	if err != nil {
+		return false, err
+	}
+	parts := strings.SplitN(task.Spec.Repo, "/", 2)
+	ghClient := newGHClient(ctx, creds.githubToken)
+	pr, _, err := ghClient.PullRequests.Get(ctx, parts[0], parts[1], task.Status.PRNumber)
+	if err != nil {
+		return false, err
+	}
+	for _, l := range pr.Labels {
+		if l.GetName() == label {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// removePRLabel removes a label from the PR associated with the DevTask.
+func removePRLabel(ctx context.Context, c client.Client, task *devpipelinev1alpha1.DevTask, label string) error {
+	if task.Status.PRNumber == 0 {
+		return nil
+	}
+	creds, err := readPipelineCredentials(ctx, c)
+	if err != nil {
+		return err
+	}
+	parts := strings.SplitN(task.Spec.Repo, "/", 2)
+	ghClient := newGHClient(ctx, creds.githubToken)
+	_, err = ghClient.Issues.RemoveLabelForIssue(ctx, parts[0], parts[1], task.Status.PRNumber, label)
+	return err
+}
+
 func newGHClient(ctx context.Context, token string) *gh.Client {
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 	return gh.NewClient(oauth2.NewClient(ctx, ts))

@@ -49,3 +49,10 @@ func deleteNamespace(ctx context.Context, c client.Client, ns string) error {
 	obj.Name = ns
 	return client.IgnoreNotFound(c.Delete(ctx, obj))
 }
+
+func deleteRevisionPod(ctx context.Context, c client.Client, ns string) error {
+	pod := &corev1.Pod{}
+	pod.Name = "agent-rev"
+	pod.Namespace = ns
+	return client.IgnoreNotFound(c.Delete(ctx, pod))
+}

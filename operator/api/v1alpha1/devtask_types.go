@@ -32,7 +32,7 @@ type DevTaskSpec struct {
 }
 
 // DevTaskPhase represents the current lifecycle phase
-// +kubebuilder:validation:Enum=Pending;Building;Running;AwaitingReview;BlockedOnClarification;Failed;Completed
+// +kubebuilder:validation:Enum=Pending;Building;Running;AwaitingReview;AwaitingRevision;BlockedOnClarification;Failed;Completed
 type DevTaskPhase string
 
 const (
@@ -40,6 +40,7 @@ const (
 	PhaseBuilding               DevTaskPhase = "Building"
 	PhaseRunning                DevTaskPhase = "Running"
 	PhaseAwaitingReview         DevTaskPhase = "AwaitingReview"
+	PhaseAwaitingRevision       DevTaskPhase = "AwaitingRevision"
 	PhaseBlockedOnClarification DevTaskPhase = "BlockedOnClarification"
 	PhaseFailed                 DevTaskPhase = "Failed"
 	PhaseCompleted              DevTaskPhase = "Completed"
