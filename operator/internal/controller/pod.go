@@ -46,7 +46,6 @@ func agentImage() string {
 	return "localhost:5000/devcontainer:latest"
 }
 
-
 func int64Ptr(i int64) *int64 { return &i }
 func boolPtr(b bool) *bool    { return &b }
 
@@ -264,13 +263,14 @@ func agentPodResume(task *devpipelinev1alpha1.DevTask) *corev1.Pod {
 			"git config --global user.email \"${GIT_AUTHOR_EMAIL}\"\n"+
 			"git clone https://github.com/%s /workspaces/%s\n"+
 			"cd /workspaces/%s\n"+
-			"git checkout claude/issue-%d\n"+
+			// Find existing branch by prefix (legacy claude/issue-N or claude/issue-N-slug).
+			"EXISTING_BRANCH=$(git ls-remote --heads origin 'claude/issue-%d' 'claude/issue-%d-*' 2>/dev/null | head -1 | awk '{print $2}' | sed 's|refs/heads/||'); [ -n \"$EXISTING_BRANCH\" ] && git checkout \"$EXISTING_BRANCH\" || true\n"+
 			"rm -f .mcp.json\n"+
 			"claude -p %q "+
 			"--allowedTools 'Read,Edit,Write,Bash' "+
 			"--dangerously-skip-permissions --output-format json > /tmp/claude-output.json",
 		repo, task.Spec.Repo, repo, repo,
-		task.Spec.IssueNumber,
+		task.Spec.IssueNumber, task.Spec.IssueNumber,
 		resumePrompt,
 	)
 
@@ -284,11 +284,11 @@ func buildRevisionPrompt(task *devpipelinev1alpha1.DevTask) string {
 		"You are addressing PR review feedback on PR #%d for issue #%d in %s.\n\n"+
 			"Steps (in order):\n"+
 			"1. Read the PR review comments on a SINGLE LINE: `gh pr view %d -R %s --json reviews,comments --jq '{reviews: [.reviews[] | {author: .author.login, body: .body, state: .state}], comments: [.comments[] | {author: .author.login, body: .body}]}'`\n"+
-			"2. Check out the existing branch and pull latest — run on a SINGLE LINE: `git checkout claude/issue-%d && git pull origin claude/issue-%d`\n"+
+			"2. The wrapper script has already checked out the PR branch — verify with `git branch --show-current`. Pull latest if needed: `git pull`\n"+
 			"3. Address ALL feedback. Make every requested change now.\n"+
 			"4. Stage: `git restore .mcp.json 2>/dev/null || true && git add -A`\n"+
 			"5. Commit on a SINGLE LINE: `git commit -s -m \"fix: address review feedback\" -m \"Refs #%d\" -m \"Changes: <one sentence describing what you changed>\"`\n"+
-			"6. Push on a SINGLE LINE: `git push --force-with-lease -u origin claude/issue-%d`\n"+
+			"6. Push on a SINGLE LINE: `git push --force-with-lease`\n"+
 			"   The existing PR auto-updates — do NOT open a new PR.\n\n"+
 			"CRITICAL bash invariants — break these and the run fails:\n"+
 			"- Every Bash command MUST fit on a SINGLE LINE.\n"+
@@ -301,8 +301,6 @@ func buildRevisionPrompt(task *devpipelinev1alpha1.DevTask) string {
 			"- Use Bash for all git/gh commands. GITHUB_TOKEN is pre-set.",
 		task.Status.PRNumber, task.Spec.IssueNumber, task.Spec.Repo,
 		task.Status.PRNumber, task.Spec.Repo,
-		task.Spec.IssueNumber, task.Spec.IssueNumber,
-		task.Spec.IssueNumber,
 		task.Spec.IssueNumber,
 	)
 }
@@ -320,13 +318,15 @@ func agentPodRevision(task *devpipelinev1alpha1.DevTask) *corev1.Pod {
 			"git config --global user.email \"${GIT_AUTHOR_EMAIL}\"\n"+
 			"git clone https://github.com/%s /workspaces/%s\n"+
 			"cd /workspaces/%s\n"+
-			"git checkout claude/issue-%d\n"+
+			// Look up the branch from the PR — handles slug names like claude/issue-N-some-title
+			// as well as the legacy claude/issue-N format.
+			"git checkout \"$(gh pr view %d -R %s --json headRefName --jq .headRefName)\"\n"+
 			"rm -f .mcp.json\n"+
 			"claude -p %q "+
 			"--allowedTools 'Read,Edit,Write,Bash' "+
 			"--dangerously-skip-permissions --output-format json > /tmp/claude-output.json",
 		repo, task.Spec.Repo, repo, repo,
-		task.Spec.IssueNumber,
+		task.Status.PRNumber, task.Spec.Repo,
 		prompt,
 	)
 	pod := agentPod(task, "", "")
