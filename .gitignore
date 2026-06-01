@@ -1,2 +1,3 @@
 .claude/scheduled_tasks.lock
 .pipeline.env
+*.DS_Store

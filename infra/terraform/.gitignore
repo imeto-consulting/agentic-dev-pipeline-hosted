@@ -1,0 +1,15 @@
+# Terraform infrastructure layout
+#
+# Apply in order:
+#   1. bootstrap/  — GCS state bucket + bootstrap APIs (local state, run once)
+#   2. shared/     — AR repos, SAs, secrets, Pub/Sub (GCS backend)
+#   3. cluster/    — GKE Autopilot + Cloud NAT (GCS backend)
+#
+# After cluster exists:
+#   4. kubectl apply CRDs + operator (via CI/CD or manually)
+
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+.DS_Store
