@@ -21,6 +21,12 @@ ARCHITECTURE.md                         — system architecture reference
   skills/                               — development skills for this repo
 operator/                               — kubebuilder Go project (created in Phase 2)
 deploy/                                 — kustomization / Helm chart (created in Phase 4)
+  operator/                             — in-cluster operator overlay (hosted GKE)
+  build/                                — envbuilder Job that pushes to Artifact Registry
+infra/                                  — cloud hosting (one repo, separate GCP projects per path)
+  README.md                             — GKE bootstrap + deploy runbook
+  terraform/gke/                        — GKE path: bootstrap (state + CI SA) + root (GKE, AR, IAM)
+  terraform/cloudrun/                   — Cloud Run path (sibling effort; cloudrun-* workflows)
 ```
 
 ## Tech stack
@@ -52,6 +58,16 @@ k3d cluster create slaktforskning-poc \
 
 kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml
 ```
+
+## Hosted deployment (GCP/GKE)
+
+The same pipeline runs hosted on GKE Standard (Dataplane V2 enforces the egress
+NetworkPolicy; envbuilder builds devcontainers in-cluster and pushes to Artifact
+Registry). The operator runs in-cluster in `devpipeline-system` instead of via
+`make run`. Terraform + GitHub Actions live under `infra/` — see
+[infra/README.md](infra/README.md) for the bootstrap and `deploy-maintainer`
+runbook. GCP auth from Actions uses a CI service-account JSON key (`GCP_SA_KEY`);
+runtime credentials are plain k8s Secrets written from the workflow inputs.
 
 ## Operator development
 

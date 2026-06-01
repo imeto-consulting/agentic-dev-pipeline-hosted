@@ -1,0 +1,191 @@
+# gke-deploy-maintainer.yml
+#
+# Parameterized deploy of the maintainer onto the GKE cluster created by
+# infra/terraform/gke. Run this (workflow_dispatch) to point the pipeline at a
+# repo: it builds + pushes the operator image, deploys the CRD + operator +
+# triage, writes the runtime credential Secrets from the inputs, builds the
+# target repo's devcontainer via the in-cluster envbuilder Job, and configures +
+# restarts the operator.
+#
+# Required secrets (GKE project):
+#   GKE_GCP_SA_KEY      — CI service account JSON key (from bootstrap)
+#   GKE_GCP_PROJECT_ID  — GKE GCP project ID
+#
+# Cluster/region/registry are read from env below — keep them in sync with the
+# infra/terraform/gke variable defaults if you change them there.
+
+name: GKE · Deploy maintainer
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Repo to maintain (owner/name)"
+        required: true
+        type: string
+      claude_auth_mode:
+        description: "Claude auth mode"
+        required: true
+        type: choice
+        options: [oauth, api]
+        default: oauth
+      claude_token:
+        description: "Claude OAuth token (subscription) or API key — matches auth mode"
+        required: true
+      github_token:
+        description: "GitHub token (fine-grained PAT) for the target repo"
+        required: true
+      git_author_name:
+        description: "Git author name for commits"
+        required: true
+        type: string
+        default: "Agentic Dev Pipeline"
+      git_author_email:
+        description: "Git author email for commits"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  REGION: europe-north1 # Artifact Registry (regional)
+  ZONE: europe-north1-b # GKE cluster (zonal) — keep in sync with var.zone
+  CLUSTER_NAME: agentic-dev-pipeline
+  AR_REPO_ID: agentic-dev-pipeline
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.GKE_GCP_SA_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v3
+        with:
+          cluster_name: ${{ env.CLUSTER_NAME }}
+          location: ${{ env.ZONE }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Compute image refs
+        id: refs
+        run: |
+          set -euo pipefail
+          AR="${REGION}-docker.pkg.dev/${{ secrets.GKE_GCP_PROJECT_ID }}/${AR_REPO_ID}"
+          REPO_NAME="${{ inputs.target_repo }}"; REPO_NAME="${REPO_NAME##*/}"
+          SHA="$(git rev-parse --short HEAD)"
+          {
+            echo "operator_image=${AR}/operator:${SHA}"
+            echo "operator_image_latest=${AR}/operator:latest"
+            echo "devcontainer_cache=${AR}/${REPO_NAME}-devcontainer"
+            echo "devcontainer_ref=${AR}/${REPO_NAME}-devcontainer:latest"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build & push operator image
+        run: |
+          docker build operator -f operator/Dockerfile \
+            -t "${{ steps.refs.outputs.operator_image }}" \
+            -t "${{ steps.refs.outputs.operator_image_latest }}"
+          docker push "${{ steps.refs.outputs.operator_image }}"
+          docker push "${{ steps.refs.outputs.operator_image_latest }}"
+
+      - name: Apply namespaces, triage RBAC & NetworkPolicy
+        run: |
+          kubectl apply -f deploy/system/namespace.yaml
+          kubectl apply -f deploy/triage/namespace.yaml
+          kubectl apply -f deploy/triage/networkpolicy.yaml
+          kubectl apply -f deploy/triage/rbac.yaml
+
+      - name: Write runtime credential Secrets
+        env:
+          GH_TOKEN_IN: ${{ inputs.github_token }}
+          CLAUDE_TOKEN_IN: ${{ inputs.claude_token }}
+          AUTH_MODE: ${{ inputs.claude_auth_mode }}
+          GIT_NAME: ${{ inputs.git_author_name }}
+          GIT_EMAIL: ${{ inputs.git_author_email }}
+        run: |
+          set -euo pipefail
+          # devpipeline-system: full creds (operator copies these per task)
+          kubectl create secret generic pipeline-creds \
+            --namespace devpipeline-system \
+            --from-literal=github-token="${GH_TOKEN_IN}" \
+            --from-literal=claude-token="${CLAUDE_TOKEN_IN}" \
+            --from-literal=claude-auth-mode="${AUTH_MODE}" \
+            --from-literal=git-author-name="${GIT_NAME}" \
+            --from-literal=git-author-email="${GIT_EMAIL}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          # triage namespace: tokens + auth mode only
+          kubectl create secret generic pipeline-creds \
+            --namespace agentic-dev-pipeline-triage \
+            --from-literal=github-token="${GH_TOKEN_IN}" \
+            --from-literal=claude-token="${CLAUDE_TOKEN_IN}" \
+            --from-literal=claude-auth-mode="${AUTH_MODE}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy triage CronJob + prompt
+        env:
+          TARGET_REPO: ${{ inputs.target_repo }}
+          DEVCONTAINER_IMAGE_REF: ${{ steps.refs.outputs.devcontainer_ref }}
+        run: |
+          set -euo pipefail
+          envsubst '$TARGET_REPO' < deploy/triage/configmap-prompt.yaml | kubectl apply -f -
+          envsubst '$TARGET_REPO $DEVCONTAINER_IMAGE_REF' < deploy/triage/cronjob.yaml | kubectl apply -f -
+
+      - name: Deploy operator (CRD + RBAC + manager)
+        run: |
+          set -euo pipefail
+          # kubectl apply -k uses kubectl's built-in kustomize (no standalone CLI needed).
+          # The overlay carries a placeholder image; set the real image + config right after.
+          kubectl apply -k deploy/operator
+          kubectl set image deployment/controller-manager \
+            manager="${{ steps.refs.outputs.operator_image }}" -n devpipeline-system
+          kubectl set env deployment/controller-manager -n devpipeline-system \
+            PIPELINE_REPOS="${{ inputs.target_repo }}" \
+            AGENT_IMAGE="${{ steps.refs.outputs.devcontainer_ref }}"
+
+      - name: Build devcontainer via envbuilder Job
+        env:
+          TARGET_REPO: ${{ inputs.target_repo }}
+          AR_DEVCONTAINER_IMAGE: ${{ steps.refs.outputs.devcontainer_cache }}
+          ENVBUILDER_GSA_EMAIL: envbuilder@${{ secrets.GKE_GCP_PROJECT_ID }}.iam.gserviceaccount.com
+        run: |
+          set -euo pipefail
+          kubectl delete job envbuilder-seed -n devpipeline-system --ignore-not-found
+          envsubst '$TARGET_REPO $AR_DEVCONTAINER_IMAGE $ENVBUILDER_GSA_EMAIL' \
+            < deploy/build/envbuilder-job.yaml | kubectl apply -f -
+          echo "Waiting for envbuilder build (cold build can take several minutes)..."
+          deadline=$(( $(date +%s) + 1800 ))
+          while :; do
+            complete=$(kubectl get job envbuilder-seed -n devpipeline-system -o jsonpath='{.status.succeeded}' 2>/dev/null || true)
+            failed=$(kubectl get job envbuilder-seed -n devpipeline-system -o jsonpath='{.status.failed}' 2>/dev/null || true)
+            [ "${complete:-0}" -ge 1 ] 2>/dev/null && break
+            if [ "${failed:-0}" -ge 1 ] 2>/dev/null; then
+              echo "envbuilder Job failed:"; kubectl logs job/envbuilder-seed -n devpipeline-system --tail=50
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "Timed out waiting for envbuilder Job:"; kubectl logs job/envbuilder-seed -n devpipeline-system --tail=50
+              exit 1
+            fi
+            sleep 10
+          done
+          kubectl logs job/envbuilder-seed -n devpipeline-system --tail=20
+
+      - name: Restart operator & report
+        run: |
+          set -euo pipefail
+          kubectl rollout restart deployment/controller-manager -n devpipeline-system
+          kubectl rollout status deployment/controller-manager -n devpipeline-system --timeout=120s
+          echo "Maintainer deployed for ${{ inputs.target_repo }}."
+          kubectl get deployment,cronjob -n devpipeline-system -o wide || true
+          kubectl get cronjob -n agentic-dev-pipeline-triage -o wide || true

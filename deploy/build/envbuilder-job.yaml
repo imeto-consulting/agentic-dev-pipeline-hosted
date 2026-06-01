@@ -1,0 +1,60 @@
+# In-cluster envbuilder Job — builds the target repo's devcontainer and pushes
+# it to Artifact Registry. The hosted replacement for the local-docker
+# `make seed-image` flow (scripts/test-envbuilder.sh).
+#
+# Templated by deploy-maintainer.yml via envsubst:
+#   ${TARGET_REPO}            owner/name of the repo to maintain
+#   ${AR_DEVCONTAINER_IMAGE}  full AR path, e.g.
+#                             europe-north1-docker.pkg.dev/PROJ/REPO/<name>-devcontainer
+#   ${ENVBUILDER_GSA_EMAIL}   GSA the KSA impersonates (Terraform output envbuilder_gsa_email)
+#
+# Pushes to AR using Workload Identity (no static key): the envbuilder KSA is
+# bound to ${ENVBUILDER_GSA_EMAIL}, which holds artifactregistry.writer.
+# Runs as root (envbuilder builds images in-pod) — devpipeline-system has no
+# restricted Pod Security, which is why we use GKE Standard, not Autopilot.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: envbuilder
+  namespace: devpipeline-system
+  annotations:
+    iam.gke.io/gcp-service-account: ${ENVBUILDER_GSA_EMAIL}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: envbuilder-seed
+  namespace: devpipeline-system
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 1800
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: envbuilder
+      volumes:
+        - name: workspaces
+          emptyDir: {}
+      containers:
+        - name: envbuilder
+          image: ghcr.io/coder/envbuilder:latest
+          env:
+            - name: ENVBUILDER_GIT_URL
+              value: https://github.com/${TARGET_REPO}
+            - name: ENVBUILDER_GIT_USERNAME
+              value: x-access-token
+            - name: ENVBUILDER_GIT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pipeline-creds
+                  key: github-token
+            - name: ENVBUILDER_CACHE_REPO
+              value: ${AR_DEVCONTAINER_IMAGE}
+            - name: ENVBUILDER_PUSH_IMAGE
+              value: "true"
+            - name: ENVBUILDER_INIT_SCRIPT
+              value: "echo 'envbuilder build + push complete'"
+          volumeMounts:
+            - name: workspaces
+              mountPath: /workspaces

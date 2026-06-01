@@ -1,0 +1,27 @@
+# In-cluster operator deployment.
+#
+# In the local POC the operator runs via `make run` on the laptop. For the
+# hosted maintainer it runs in-cluster: this overlay composes the kubebuilder
+# CRD + RBAC + manager Deployment and relocates them into devpipeline-system
+# (where the operator reads pipeline-creds and creates DevTasks — see
+# operator/internal/controller/secrets.go `systemNamespace`).
+#
+# The deploy-maintainer.yml workflow:
+#   1. `kustomize edit set image controller=<AR>/operator:<sha>` (here)
+#   2. `kubectl apply -k deploy/operator`
+#   3. `kubectl set env deployment/controller-manager -n devpipeline-system \
+#        PIPELINE_REPOS=<target_repo> AGENT_IMAGE=<AR>/<repo>-devcontainer:latest`
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: devpipeline-system
+
+resources:
+  - ../../operator/config/crd
+  - ../../operator/config/rbac
+  - ../../operator/config/manager
+
+images:
+  - name: controller
+    newName: controller # overridden at deploy time via `kustomize edit set image`
+    newTag: latest

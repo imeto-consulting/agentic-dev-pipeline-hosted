@@ -1,0 +1,89 @@
+# gke-terraform-ci.yml
+#
+# Runs `terraform plan` on the GKE infra root on every PR that touches it, and
+# posts the plan as a PR comment so reviewers see the change before merge.
+# The Cloud Run path has its own cloudrun-* workflows + infra/terraform/cloudrun root.
+# Pattern adapted from imeto-consulting/sig-lake-light-house.
+#
+# Required secrets (GKE project):
+#   GKE_GCP_SA_KEY         — CI service account JSON key (from bootstrap)
+#   GKE_GCP_PROJECT_ID     — GKE GCP project ID
+#   GKE_GCP_CICD_SA_EMAIL  — CI service account email (var.cicd_sa_email)
+#   GKE_TF_STATE_BUCKET    — GCS bucket for remote state (bootstrap `tfstate_bucket` output)
+
+name: GKE · Terraform CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "infra/terraform/gke/**"
+      - ".github/workflows/gke-terraform-ci.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  TF_VERSION: "1.8.0"
+
+jobs:
+  plan:
+    name: Plan · infra/terraform/gke
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform/gke
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.GKE_GCP_SA_KEY }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: terraform init -input=false -backend-config="bucket=${{ secrets.GKE_TF_STATE_BUCKET }}"
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan -no-color -input=false \
+            -var="project_id=${{ secrets.GKE_GCP_PROJECT_ID }}" \
+            -var="cicd_sa_email=${{ secrets.GKE_GCP_CICD_SA_EMAIL }}" \
+            | tee /tmp/plan.txt
+          exit ${PIPESTATUS[0]}
+        continue-on-error: true
+
+      - name: Post plan comment
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('/tmp/plan.txt', 'utf8');
+            const body = `#### Terraform Plan · \`infra/terraform\`
+
+            \`\`\`
+            ${plan.length > 60000 ? plan.slice(0, 60000) + '\n...(truncated)' : plan}
+            \`\`\`
+
+            *Triggered by @${{ github.actor }}*`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
+
+      - name: Fail if plan failed
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
