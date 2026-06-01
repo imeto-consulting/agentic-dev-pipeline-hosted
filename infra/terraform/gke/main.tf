@@ -95,9 +95,17 @@ resource "google_container_cluster" "primary" {
   name     = var.cluster_name
   location = var.zone
 
-  # Manage the node pool separately.
+  # Manage the node pool separately. GKE still spins up a throwaway default node
+  # pool during cluster creation, then removes it — node_config below makes that
+  # ephemeral pool use our dedicated SA instead of the project default compute SA
+  # (which is disabled by org policy on this sandbox).
   remove_default_node_pool = true
   initial_node_count       = 1
+
+  node_config {
+    service_account = google_service_account.nodes.email
+    oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
+  }
 
   network    = google_compute_network.vpc.id
   subnetwork = google_compute_subnetwork.subnet.id
@@ -210,8 +218,13 @@ resource "google_artifact_registry_repository_iam_member" "envbuilder_writer" {
 }
 
 # Bind the in-cluster KSA (devpipeline-system/envbuilder) to the GSA.
+# The workload-identity pool (PROJECT.svc.id.goog) only exists once the cluster
+# is created, so depend on it explicitly (the member string is just text, which
+# wouldn't create the ordering on its own).
 resource "google_service_account_iam_member" "envbuilder_wi" {
   service_account_id = google_service_account.envbuilder.name
   role               = "roles/iam.workloadIdentityUser"
   member             = "serviceAccount:${var.project_id}.svc.id.goog[devpipeline-system/envbuilder]"
+
+  depends_on = [google_container_cluster.primary]
 }
