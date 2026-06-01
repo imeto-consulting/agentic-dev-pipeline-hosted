@@ -26,14 +26,17 @@ infra/terraform/gke/            APIs, VPC, GKE Standard (Dataplane V2 + Workload
 
 ## Cluster shape
 
-**GKE Standard, zonal, single node pool, public cluster, Dataplane V2** in
+**GKE Standard, zonal, single node pool, private nodes, Dataplane V2** in
 `europe-north1` (zone `europe-north1-b`). Standard (not Autopilot) keeps
 envbuilder — which builds container images inside a pod and needs root —
 reliable. **Zonal** (not regional) keeps it to a single node; the only cost is
 brief control-plane API downtime during upgrades, which a poll-based maintainer
-tolerates. A public cluster avoids Cloud NAT cost; Dataplane V2 still enforces
-the egress NetworkPolicy that is the sandbox's real security boundary. Est.
-~$30–45/mo (one node + free cluster-management tier) plus per-task usage.
+tolerates. **Private nodes** have no public IPs and egress through **Cloud NAT**;
+the control-plane endpoint stays public-but-credential-gated so GitHub Actions +
+kubectl can reach the API (a fully private endpoint would need a bastion/VPN and
+break the deploy workflow). Dataplane V2 enforces the egress NetworkPolicy that
+is the sandbox's real security boundary. Est. ~$60–75/mo (one node + Cloud NAT +
+free cluster-management tier) plus per-task usage.
 
 ## One-time bootstrap
 
