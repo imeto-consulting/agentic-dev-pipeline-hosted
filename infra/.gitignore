@@ -1,0 +1,13 @@
+# Terraform working files — never commit these
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+
+# Secrets that may land here during setup
+key.json
+*.json.key
+
+# Lock files (.terraform.lock.hcl) ARE committed on purpose — not ignored.

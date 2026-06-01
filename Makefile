@@ -49,10 +49,14 @@ install: check-config
 	kubectl apply -f deploy/triage/networkpolicy.yaml
 	kubectl apply -f deploy/triage/rbac.yaml
 	# Templated manifests — substitute only our config vars; leave shell ${VAR}
-	# references inside scripts untouched.
-	envsubst '$$TARGET_REPO $$REGISTRY_NAME $$DEVCONTAINER_IMAGE' \
+	# references inside scripts untouched. DEVCONTAINER_IMAGE_REF resolves to the
+	# local in-cluster registry here; the hosted deploy-maintainer.yml sets it to
+	# the full Artifact Registry path instead.
+	DEVCONTAINER_IMAGE_REF="$(REGISTRY_NAME):5000/$(DEVCONTAINER_IMAGE):latest" \
+		envsubst '$$TARGET_REPO' \
 		< deploy/triage/configmap-prompt.yaml | kubectl apply -f -
-	envsubst '$$TARGET_REPO $$REGISTRY_NAME $$DEVCONTAINER_IMAGE' \
+	DEVCONTAINER_IMAGE_REF="$(REGISTRY_NAME):5000/$(DEVCONTAINER_IMAGE):latest" \
+		envsubst '$$TARGET_REPO $$DEVCONTAINER_IMAGE_REF' \
 		< deploy/triage/cronjob.yaml | kubectl apply -f -
 
 # Push the devcontainer image into the in-cluster registry. Required before the

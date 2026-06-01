@@ -1,0 +1,63 @@
+# gke-terraform-cd.yml
+#
+# Applies the GKE infra root on every push to main that touches it (after a PR
+# merges). Bootstrap (state bucket + CI SA) is run once manually and is NOT
+# applied here.
+#
+# NOTE: the CI service account must hold the project roles needed to create the
+# VPC, GKE cluster, Artifact Registry, service accounts, and IAM bindings. With
+# the minimal bootstrap, run the FIRST `terraform apply` manually as a project
+# Owner (see infra/README.md); grant the CI SA those roles before relying on
+# this workflow for unattended applies.
+#
+# Required secrets (GKE project):
+#   GKE_GCP_SA_KEY         — CI service account JSON key (from bootstrap)
+#   GKE_GCP_PROJECT_ID     — GKE GCP project ID
+#   GKE_GCP_CICD_SA_EMAIL  — CI service account email (var.cicd_sa_email)
+#   GKE_TF_STATE_BUCKET    — GCS bucket for remote state (bootstrap `tfstate_bucket` output)
+
+name: GKE · Terraform CD
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "infra/terraform/gke/**"
+      - ".github/workflows/gke-terraform-cd.yml"
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: "1.8.0"
+
+jobs:
+  apply:
+    name: Apply · infra/terraform/gke
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: infra/terraform/gke
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.GKE_GCP_SA_KEY }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: terraform init -input=false -backend-config="bucket=${{ secrets.GKE_TF_STATE_BUCKET }}"
+
+      - name: Terraform Apply
+        run: |
+          terraform apply -auto-approve -input=false \
+            -var="project_id=${{ secrets.GKE_GCP_PROJECT_ID }}" \
+            -var="cicd_sa_email=${{ secrets.GKE_GCP_CICD_SA_EMAIL }}"

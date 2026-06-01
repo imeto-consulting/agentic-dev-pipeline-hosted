@@ -72,7 +72,9 @@ spec:
               mountPath: /tmp
           containers:
           - name: triage
-            image: ${REGISTRY_NAME}:5000/${DEVCONTAINER_IMAGE}:latest
+            # Hosted (GKE): full Artifact Registry path, injected by deploy-maintainer.yml.
+            # Local (k3d): set DEVCONTAINER_IMAGE_REF=${REGISTRY_NAME}:5000/${DEVCONTAINER_IMAGE}:latest
+            image: ${DEVCONTAINER_IMAGE_REF}
             command: ["/bin/bash", "/tmp/triage.sh"]
             securityContext:
               allowPrivilegeEscalation: false
