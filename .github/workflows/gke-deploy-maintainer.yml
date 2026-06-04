@@ -73,9 +73,23 @@ jobs:
         uses: google-github-actions/auth@v3
         with:
           credentials_json: ${{ secrets.GKE_GCP_SA_KEY }}
+          project_id: ${{ secrets.GKE_GCP_PROJECT_ID }}
 
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: gke-gcloud-auth-plugin
+
+      - name: Debug GCP context
+        run: |
+          echo "Project from gcloud config:"
+          gcloud config get-value project
+          echo "SA identity:"
+          gcloud auth list --filter=status:ACTIVE --format="value(account)"
+          echo "Project ID secret length: ${#PROJECT_ID}"
+          echo "Project ID secret (first 10 chars): ${PROJECT_ID:0:10}"
+        env:
+          PROJECT_ID: ${{ secrets.GKE_GCP_PROJECT_ID }}
 
       - name: Get GKE credentials
         run: |
