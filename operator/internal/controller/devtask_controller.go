@@ -69,7 +69,12 @@ func (r *DevTaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err := ensureTaskSecret(ctx, r.Client, task, creds); err != nil {
 			return ctrl.Result{}, fmt.Errorf("ensure task secret: %w", err)
 		}
-		pod := agentPod(task, creds.githubToken, creds.claudeToken)
+		var pod *corev1.Pod
+		if agentBackend() == "aider" {
+			pod = agentPodAider(task)
+		} else {
+			pod = agentPod(task, creds.githubToken, creds.claudeToken)
+		}
 		if err := ensurePod(ctx, r.Client, pod); err != nil {
 			return ctrl.Result{}, fmt.Errorf("ensure pod: %w", err)
 		}
@@ -170,7 +175,12 @@ func (r *DevTaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 		// Delete a previous agent-rev pod if it exists (completed from an earlier revision cycle).
 		_ = deleteRevisionPod(ctx, r.Client, task.Status.Namespace)
-		pod := agentPodRevision(task)
+		var pod *corev1.Pod
+		if agentBackend() == "aider" {
+			pod = agentPodAiderRevision(task)
+		} else {
+			pod = agentPodRevision(task)
+		}
 		if err := ensurePod(ctx, r.Client, pod); err != nil {
 			return ctrl.Result{}, fmt.Errorf("ensure pod: %w", err)
 		}
@@ -198,7 +208,12 @@ func (r *DevTaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err := ensureTaskSecret(ctx, r.Client, task, creds); err != nil {
 			return ctrl.Result{}, fmt.Errorf("ensure task secret: %w", err)
 		}
-		pod := agentPodResume(task)
+		var pod *corev1.Pod
+		if agentBackend() == "aider" {
+			pod = agentPodAider(task) // Aider doesn't have a separate "resume" — it re-reads the issue
+		} else {
+			pod = agentPodResume(task)
+		}
 		if err := ensurePod(ctx, r.Client, pod); err != nil {
 			return ctrl.Result{}, fmt.Errorf("ensure pod: %w", err)
 		}

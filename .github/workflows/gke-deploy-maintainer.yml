@@ -23,18 +23,27 @@ on:
         description: "Repo to maintain (owner/name)"
         required: true
         type: string
-      claude_auth_mode:
-        description: "Claude auth mode"
+      agent_backend:
+        description: "Agent backend to use"
         required: true
+        type: choice
+        options: [aider, claude]
+        default: aider
+      claude_auth_mode:
+        description: "Claude auth mode (only if backend=claude)"
+        required: false
         type: choice
         options: [oauth, api]
         default: oauth
       claude_token:
-        description: "Claude OAuth token (subscription) or API key — matches auth mode"
-        required: true
+        description: "Claude OAuth token or API key (only if backend=claude)"
+        required: false
       github_token:
         description: "GitHub token (fine-grained PAT) for the target repo"
         required: true
+      hf_token:
+        description: "HuggingFace token for gated model downloads (optional)"
+        required: false
       git_author_name:
         description: "Git author name for commits"
         required: true
@@ -49,8 +58,8 @@ permissions:
   contents: read
 
 env:
-  REGION: europe-north1 # Artifact Registry (regional)
-  ZONE: europe-north1-b # GKE cluster (zonal) — keep in sync with var.zone
+  REGION: europe-west4 # Artifact Registry (regional)
+  ZONE: europe-west4-a # GKE cluster (zonal) — keep in sync with var.zone
   CLUSTER_NAME: agentic-dev-pipeline
   AR_REPO_ID: agentic-dev-pipeline
 
@@ -89,6 +98,8 @@ jobs:
             echo "operator_image_latest=${AR}/operator:latest"
             echo "devcontainer_cache=${AR}/${REPO_NAME}-devcontainer"
             echo "devcontainer_ref=${AR}/${REPO_NAME}-devcontainer:latest"
+            echo "aider_agent_image=${AR}/aider-agent:${SHA}"
+            echo "aider_agent_image_latest=${AR}/aider-agent:latest"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build & push operator image
@@ -98,6 +109,35 @@ jobs:
             -t "${{ steps.refs.outputs.operator_image_latest }}"
           docker push "${{ steps.refs.outputs.operator_image }}"
           docker push "${{ steps.refs.outputs.operator_image_latest }}"
+
+      - name: Build & push aider agent image
+        if: inputs.agent_backend == 'aider'
+        run: |
+          docker build deploy/agent -f deploy/agent/Dockerfile \
+            -t "${{ steps.refs.outputs.aider_agent_image }}" \
+            -t "${{ steps.refs.outputs.aider_agent_image_latest }}"
+          docker push "${{ steps.refs.outputs.aider_agent_image }}"
+          docker push "${{ steps.refs.outputs.aider_agent_image_latest }}"
+
+      - name: Deploy LLM inference server
+        if: inputs.agent_backend == 'aider'
+        env:
+          HF_TOKEN: ${{ inputs.hf_token }}
+        run: |
+          set -euo pipefail
+          kubectl apply -k deploy/inference
+          # Create HF token secret if provided (for gated models)
+          if [ -n "${HF_TOKEN}" ]; then
+            kubectl create secret generic inference-creds \
+              --namespace llm-inference \
+              --from-literal=hf-token="${HF_TOKEN}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+          fi
+          echo "Waiting for vLLM inference server to become ready (model download + load)..."
+          kubectl rollout status deployment/vllm -n llm-inference --timeout=900s || {
+            echo "vLLM not ready yet — check 'kubectl logs -n llm-inference deployment/vllm' for status"
+            echo "First deploy with a cold model cache can take 10-15 minutes"
+          }
 
       - name: Apply namespaces, triage RBAC & NetworkPolicy
         run: |
@@ -113,14 +153,15 @@ jobs:
           AUTH_MODE: ${{ inputs.claude_auth_mode }}
           GIT_NAME: ${{ inputs.git_author_name }}
           GIT_EMAIL: ${{ inputs.git_author_email }}
+          AGENT_BACKEND: ${{ inputs.agent_backend }}
         run: |
           set -euo pipefail
           # devpipeline-system: full creds (operator copies these per task)
           kubectl create secret generic pipeline-creds \
             --namespace devpipeline-system \
             --from-literal=github-token="${GH_TOKEN_IN}" \
-            --from-literal=claude-token="${CLAUDE_TOKEN_IN}" \
-            --from-literal=claude-auth-mode="${AUTH_MODE}" \
+            --from-literal=claude-token="${CLAUDE_TOKEN_IN:-unused}" \
+            --from-literal=claude-auth-mode="${AUTH_MODE:-api}" \
             --from-literal=git-author-name="${GIT_NAME}" \
             --from-literal=git-author-email="${GIT_EMAIL}" \
             --dry-run=client -o yaml | kubectl apply -f -
@@ -128,8 +169,8 @@ jobs:
           kubectl create secret generic pipeline-creds \
             --namespace agentic-dev-pipeline-triage \
             --from-literal=github-token="${GH_TOKEN_IN}" \
-            --from-literal=claude-token="${CLAUDE_TOKEN_IN}" \
-            --from-literal=claude-auth-mode="${AUTH_MODE}" \
+            --from-literal=claude-token="${CLAUDE_TOKEN_IN:-unused}" \
+            --from-literal=claude-auth-mode="${AUTH_MODE:-api}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy triage CronJob + prompt
@@ -149,11 +190,24 @@ jobs:
           kubectl apply -k deploy/operator
           kubectl set image deployment/controller-manager \
             manager="${{ steps.refs.outputs.operator_image }}" -n devpipeline-system
+
+          # Determine agent image based on backend
+          if [ "${{ inputs.agent_backend }}" = "aider" ]; then
+            AGENT_IMG="${{ steps.refs.outputs.aider_agent_image_latest }}"
+          else
+            AGENT_IMG="${{ steps.refs.outputs.devcontainer_ref }}"
+          fi
+
           kubectl set env deployment/controller-manager -n devpipeline-system \
             PIPELINE_REPOS="${{ inputs.target_repo }}" \
-            AGENT_IMAGE="${{ steps.refs.outputs.devcontainer_ref }}"
+            AGENT_IMAGE="${{ steps.refs.outputs.devcontainer_ref }}" \
+            AGENT_BACKEND="${{ inputs.agent_backend }}" \
+            AIDER_AGENT_IMAGE="${{ steps.refs.outputs.aider_agent_image_latest }}" \
+            INFERENCE_ENDPOINT="http://vllm.llm-inference.svc.cluster.local:8000/v1" \
+            INFERENCE_MODEL="openai/qwen3-32b-awq"
 
       - name: Build devcontainer via envbuilder Job
+        if: inputs.agent_backend == 'claude'
         env:
           TARGET_REPO: ${{ inputs.target_repo }}
           AR_DEVCONTAINER_IMAGE: ${{ steps.refs.outputs.devcontainer_cache }}

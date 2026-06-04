@@ -1,0 +1,16 @@
+# Persistent volume for model weights. Survives pod restarts and node
+# scale-to-zero events so the ~18GB model doesn't re-download every time.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-cache
+  namespace: llm-inference
+spec:
+  accessModes:
+    - ReadWriteOnce
+  # pd-balanced persists across node scale events. The PV stays in the zone
+  # and re-attaches when the GPU node scales back up.
+  storageClassName: premium-rwo
+  resources:
+    requests:
+      storage: 50Gi

@@ -1,0 +1,103 @@
+# vLLM inference server serving an OpenAI-compatible API.
+# Model is downloaded on first run and cached on the PVC.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: llm-inference
+  labels:
+    app: vllm
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/part-of: agentic-dev-pipeline
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # GPU workload — only one pod at a time
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+    spec:
+      # Tolerate the GPU taint so we land on the GPU node pool.
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      # Prefer (but don't require) spot nodes.
+      nodeSelector:
+        cloud.google.com/gke-accelerator: nvidia-l4
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:latest
+          args:
+            - --model
+            - Qwen/Qwen3-32B-AWQ
+            - --quantization
+            - awq
+            - --max-model-len
+            - "16384"
+            - --gpu-memory-utilization
+            - "0.92"
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+            - --download-dir
+            - /models
+            - --trust-remote-code
+            - --enable-auto-tool-choice
+            - --tool-call-parser
+            - hermes
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          env:
+            - name: HF_HOME
+              value: /models
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: inference-creds
+                  key: hf-token
+                  optional: true
+          resources:
+            requests:
+              cpu: "4"
+              memory: 16Gi
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+            - name: shm
+              mountPath: /dev/shm
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30 # Model load can take 5+ minutes on cold start
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi

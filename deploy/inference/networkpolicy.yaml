@@ -1,0 +1,26 @@
+# Inference server ingress: only allow traffic from devpipeline-system
+# (agent pods) and llm-inference namespace itself (health checks).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vllm-ingress
+  namespace: llm-inference
+spec:
+  podSelector:
+    matchLabels:
+      app: vllm
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Agent pods in per-task namespaces have this label
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: agentic-dev-pipeline
+        # Also allow from devpipeline-system (operator readiness checks)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: devpipeline-system
+      ports:
+        - port: 8000
+          protocol: TCP

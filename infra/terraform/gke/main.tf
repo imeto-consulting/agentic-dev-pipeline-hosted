@@ -178,6 +178,59 @@ resource "google_artifact_registry_repository" "images" {
   depends_on = [google_project_service.apis]
 }
 
+# ── GPU node pool (inference) ─────────────────────────────────────────────────
+# Hosts the LLM inference server (vLLM). Scale-to-zero when no DevTasks are
+# active: the cluster autoscaler provisions a node when a pod with the GPU taint
+# toleration + resource request goes Pending, and removes it after the
+# scale-down-unneeded-time (default 10min idle).
+resource "google_container_node_pool" "gpu" {
+  name     = "gpu-inference"
+  cluster  = google_container_cluster.primary.id
+  location = var.zone
+
+  autoscaling {
+    min_node_count = var.gpu_node_count_min
+    max_node_count = var.gpu_node_count_max
+  }
+
+  node_config {
+    machine_type    = var.gpu_machine_type
+    service_account = google_service_account.nodes.email
+    oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
+    spot            = var.gpu_spot
+
+    guest_accelerator {
+      type  = var.gpu_accelerator_type
+      count = var.gpu_accelerator_count
+      gpu_driver_installation_config {
+        gpu_driver_version = "LATEST"
+      }
+    }
+
+    # Taint to prevent non-GPU workloads from landing here.
+    taint {
+      key    = "nvidia.com/gpu"
+      value  = "present"
+      effect = "NO_SCHEDULE"
+    }
+
+    workload_metadata_config {
+      mode = "GKE_METADATA"
+    }
+
+    # Local SSD for fast model weight loading (optional — vLLM mmaps the weights).
+    disk_size_gb = 100
+    disk_type    = "pd-balanced"
+  }
+
+  management {
+    auto_repair  = true
+    auto_upgrade = true
+  }
+
+  depends_on = [google_compute_router_nat.nat]
+}
+
 # Node SA pulls images (agent + triage pods).
 resource "google_artifact_registry_repository_iam_member" "nodes_reader" {
   location   = google_artifact_registry_repository.images.location
