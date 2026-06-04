@@ -78,11 +78,10 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Get GKE credentials
-        uses: google-github-actions/get-gke-credentials@v3
-        with:
-          cluster_name: ${{ env.CLUSTER_NAME }}
-          location: ${{ env.ZONE }}
-          project_id: ${{ secrets.GKE_GCP_PROJECT_ID }}
+        run: |
+          gcloud container clusters get-credentials ${{ env.CLUSTER_NAME }} \
+            --zone ${{ env.ZONE }} \
+            --project ${{ secrets.GKE_GCP_PROJECT_ID }}
 
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
