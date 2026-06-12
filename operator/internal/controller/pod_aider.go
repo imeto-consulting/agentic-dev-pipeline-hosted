@@ -43,7 +43,7 @@ func inferenceEndpoint() string {
 	if v := os.Getenv("INFERENCE_ENDPOINT"); v != "" {
 		return v
 	}
-	return "http://vllm.llm-inference.svc.cluster.local:8000/v1"
+	return "http://llm-api.llm-inference.svc.cluster.local:8000/v1"
 }
 
 // inferenceModel returns the model name to pass to aider's --model flag.

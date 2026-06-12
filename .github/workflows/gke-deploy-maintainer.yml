@@ -217,7 +217,7 @@ jobs:
             AGENT_IMAGE="${{ steps.refs.outputs.devcontainer_ref }}" \
             AGENT_BACKEND="${{ inputs.agent_backend }}" \
             AIDER_AGENT_IMAGE="${{ steps.refs.outputs.aider_agent_image_latest }}" \
-            INFERENCE_ENDPOINT="http://vllm.llm-inference.svc.cluster.local:8000/v1" \
+            INFERENCE_ENDPOINT="http://llm-api.llm-inference.svc.cluster.local:8000/v1" \
             INFERENCE_MODEL="openai/qwen3-32b-awq"
 
       - name: Build devcontainer via envbuilder Job
