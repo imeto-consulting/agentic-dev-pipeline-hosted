@@ -66,6 +66,13 @@ spec:
         image: controller:latest
         name: manager
         ports: []
+        env:
+          - name: INFERENCE_ENDPOINT
+            value: "http://llm-api.llm-inference.svc.cluster.local:8000/v1"
+          - name: INFERENCE_MODEL
+            value: "openai/Qwen/Qwen3-14B-AWQ"
+          - name: AGENT_BACKEND
+            value: "aider"
         securityContext:
           readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false

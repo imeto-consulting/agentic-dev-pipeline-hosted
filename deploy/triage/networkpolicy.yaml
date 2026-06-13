@@ -8,11 +8,21 @@ spec:
   policyTypes: [Ingress, Egress]
   ingress: []
   egress:
+  # DNS
   - ports:
     - protocol: UDP
       port: 53
     - protocol: TCP
       port: 53
+  # GitHub API (HTTPS)
   - ports:
     - protocol: TCP
       port: 443
+  # In-cluster vLLM inference (llm-inference namespace)
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: llm-inference
+    ports:
+    - protocol: TCP
+      port: 8000

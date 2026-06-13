@@ -10,7 +10,7 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      activeDeadlineSeconds: 240
+      activeDeadlineSeconds: 300
       template:
         spec:
           restartPolicy: Never
@@ -22,60 +22,11 @@ spec:
             runAsNonRoot: true
             seccompProfile:
               type: RuntimeDefault
-          initContainers:
-          - name: write-script
-            image: busybox
-            command:
-            - sh
-            - -c
-            - printf '%s' "$SCRIPT" > /tmp/triage.sh && chmod +x /tmp/triage.sh
-            env:
-            - name: SCRIPT
-              value: |
-                #!/bin/bash
-                set -e
-                export HOME=/home/node
-
-                # In oauth mode, unset ANTHROPIC_API_KEY so Claude Code uses
-                # CLAUDE_CODE_OAUTH_TOKEN (subscription billing) instead of API billing.
-                [ "${CLAUDE_AUTH_MODE}" = "oauth" ] && unset ANTHROPIC_API_KEY || true
-
-                # List open needs-triage issues
-                ISSUES=$(gh issue list \
-                  --repo ${TARGET_REPO} \
-                  --label needs-triage \
-                  --state open \
-                  --json number \
-                  --jq '.[].number')
-
-                if [ -z "${ISSUES}" ]; then
-                  echo "No needs-triage issues found"
-                  exit 0
-                fi
-
-                for ISSUE_NUMBER in ${ISSUES}; do
-                  echo "Triaging issue #${ISSUE_NUMBER}..."
-                  PROMPT=$(sed "s/ISSUE_NUMBER/${ISSUE_NUMBER}/g" /config/prompt.txt)
-                  claude -p "${PROMPT}" \
-                    --allowedTools 'Bash' \
-                    --output-format json \
-                    > /tmp/triage-${ISSUE_NUMBER}.json 2>&1 || true
-                  echo "Done with issue #${ISSUE_NUMBER}"
-                done
-            securityContext:
-              allowPrivilegeEscalation: false
-              readOnlyRootFilesystem: true
-              capabilities:
-                drop: [ALL]
-            volumeMounts:
-            - name: tmp
-              mountPath: /tmp
           containers:
           - name: triage
-            # Hosted (GKE): full Artifact Registry path, injected by deploy-maintainer.yml.
-            # Local (k3d): set DEVCONTAINER_IMAGE_REF=${REGISTRY_NAME}:5000/${DEVCONTAINER_IMAGE}:latest
-            image: ${DEVCONTAINER_IMAGE_REF}
-            command: ["/bin/bash", "/tmp/triage.sh"]
+            image: europe-west4-docker.pkg.dev/agentic-dev-pipeline/agentic-dev-pipeline/triage-agent:latest
+            imagePullPolicy: Always
+            command: ["/bin/bash", "/app/triage.sh"]
             securityContext:
               allowPrivilegeEscalation: false
               readOnlyRootFilesystem: true
@@ -87,42 +38,30 @@ spec:
                 secretKeyRef:
                   name: pipeline-creds
                   key: github-token
-            - name: GITHUB_PERSONAL_ACCESS_TOKEN
+            - name: GH_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: pipeline-creds
                   key: github-token
-            - name: CLAUDE_CODE_OAUTH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: pipeline-creds
-                  key: claude-token
-            - name: ANTHROPIC_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: pipeline-creds
-                  key: claude-token
-            - name: CLAUDE_AUTH_MODE
-              valueFrom:
-                secretKeyRef:
-                  name: pipeline-creds
-                  key: claude-auth-mode
+            - name: TARGET_REPO
+              value: "imeto-consulting/sig-lake-light-house"
+            - name: INFERENCE_ENDPOINT
+              value: "http://llm-api.llm-inference.svc.cluster.local:8000/v1"
+            - name: INFERENCE_MODEL
+              value: "Qwen/Qwen3-14B-AWQ"
             resources:
               requests:
-                memory: 512Mi
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                memory: 256Mi
             volumeMounts:
             - name: tmp
               mountPath: /tmp
             - name: home
-              mountPath: /home/node
-            - name: prompt
-              mountPath: /config
-              readOnly: true
+              mountPath: /home/triage
           volumes:
           - name: tmp
             emptyDir: {}
           - name: home
             emptyDir: {}
-          - name: prompt
-            configMap:
-              name: triage-prompt

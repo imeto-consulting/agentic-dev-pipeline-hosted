@@ -35,9 +35,9 @@ spec:
           image: vllm/vllm-openai:latest
           args:
             - --model
-            - Qwen/Qwen3-32B-AWQ
+            - Qwen/Qwen3-14B-AWQ
             - --quantization
-            - awq
+            - awq_marlin
             - --max-model-len
             - "16384"
             - --gpu-memory-utilization
@@ -81,18 +81,26 @@ spec:
             httpGet:
               path: /health
               port: 8000
-            initialDelaySeconds: 60
+            initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
-            failureThreshold: 30 # Model load can take 5+ minutes on cold start
+            failureThreshold: 10
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 60 # Up to 10 minutes for first-time model download + compile
           livenessProbe:
             httpGet:
               path: /health
               port: 8000
-            initialDelaySeconds: 120
+            initialDelaySeconds: 10
             periodSeconds: 30
             timeoutSeconds: 5
-            failureThreshold: 5
+            failureThreshold: 3
       volumes:
         - name: model-cache
           persistentVolumeClaim:

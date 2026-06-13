@@ -1,5 +1,5 @@
-# Inference server ingress: only allow traffic from devpipeline-system
-# (agent pods) and llm-inference namespace itself (health checks).
+# Inference server ingress: allow traffic from agent namespaces, operator,
+# and triage namespace.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -17,10 +17,14 @@ spec:
         - namespaceSelector:
             matchLabels:
               app.kubernetes.io/part-of: agentic-dev-pipeline
-        # Also allow from devpipeline-system (operator readiness checks)
+        # Operator namespace (readiness checks)
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: devpipeline-system
+        # Triage namespace (LLM calls for issue classification)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentic-dev-pipeline-triage
       ports:
         - port: 8000
           protocol: TCP

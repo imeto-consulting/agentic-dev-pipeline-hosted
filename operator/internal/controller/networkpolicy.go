@@ -24,25 +24,30 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	controllerutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	devpipelinev1alpha1 "github.com/jonaseck2/agentic-dev-pipeline/operator/api/v1alpha1"
 )
 
-// ensureNetworkPolicy creates the deny-all + allowlist egress policy for the task namespace.
-// Allows: kube-dns (UDP/TCP 53), all external HTTPS (:443).
+// ensureNetworkPolicy creates or updates the deny-all + allowlist egress policy for the task namespace.
+// Allows: kube-dns (UDP/TCP 53), all external HTTPS (:443), in-cluster inference (:8000).
 // Calico enforces this — Flannel does not, so the cluster must use Calico CNI.
 func ensureNetworkPolicy(ctx context.Context, c client.Client, task *devpipelinev1alpha1.DevTask) error {
 	tcp := corev1.ProtocolTCP
 	udp := corev1.ProtocolUDP
 	port53 := intstr.FromInt(53)
 	port443 := intstr.FromInt(443)
+	port8000 := intstr.FromInt(8000)
 
 	policy := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "sandbox-egress",
 			Namespace: taskNamespace(task),
 		},
-		Spec: networkingv1.NetworkPolicySpec{
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, c, policy, func() error {
+		policy.Spec = networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{},
 			PolicyTypes: []networkingv1.PolicyType{
 				networkingv1.PolicyTypeIngress,
@@ -61,8 +66,24 @@ func ensureNetworkPolicy(ctx context.Context, c client.Client, task *devpipeline
 						{Protocol: &tcp, Port: &port443},
 					},
 				},
+				{
+					// Allow egress to in-cluster LLM inference (vLLM in llm-inference namespace)
+					To: []networkingv1.NetworkPolicyPeer{
+						{
+							NamespaceSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"kubernetes.io/metadata.name": "llm-inference",
+								},
+							},
+						},
+					},
+					Ports: []networkingv1.NetworkPolicyPort{
+						{Protocol: &tcp, Port: &port8000},
+					},
+				},
 			},
-		},
-	}
-	return client.IgnoreAlreadyExists(c.Create(ctx, policy))
+		}
+		return nil
+	})
+	return err
 }

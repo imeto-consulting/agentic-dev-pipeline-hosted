@@ -51,7 +51,7 @@ func inferenceModel() string {
 	if v := os.Getenv("INFERENCE_MODEL"); v != "" {
 		return v
 	}
-	return "openai/qwen3-32b-awq"
+	return "openai/Qwen/Qwen3-14B-AWQ"
 }
 
 // aiderAgentImage returns the image to use for aider-based agent pods.

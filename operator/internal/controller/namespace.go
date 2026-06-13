@@ -37,6 +37,7 @@ func ensureNamespace(ctx context.Context, c client.Client, task *devpipelinev1al
 			Name: taskNamespace(task),
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "agentic-dev-pipeline",
+				"app.kubernetes.io/part-of":    "agentic-dev-pipeline",
 				"devpipeline.local/task":       task.Name,
 			},
 		},

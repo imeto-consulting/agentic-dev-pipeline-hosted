@@ -188,6 +188,9 @@ resource "google_container_node_pool" "gpu" {
   cluster  = google_container_cluster.primary.id
   location = var.zone
 
+  # Allow scheduling in multiple zones for spot availability fallback.
+  node_locations = var.gpu_zones
+
   autoscaling {
     min_node_count = var.gpu_node_count_min
     max_node_count = var.gpu_node_count_max

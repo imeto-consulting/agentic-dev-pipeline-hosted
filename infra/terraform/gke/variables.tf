@@ -86,3 +86,9 @@ variable "gpu_spot" {
   description = "Use spot (preemptible) VMs for GPU nodes. ~60-70% cheaper but can be evicted."
   default     = true
 }
+
+variable "gpu_zones" {
+  type        = list(string)
+  description = "Zones where GPU nodes can be scheduled. Multiple zones improve spot availability."
+  default     = ["europe-west4-a", "europe-west4-b", "europe-west4-c"]
+}
